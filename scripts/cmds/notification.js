@@ -35,6 +35,34 @@ module.exports = {
 			sendingNotification: "Start sending notification from admin bot to %1 chat groups",
 			sentNotification: "✅ Sent notification to %1 groups successfully",
 			errorSendingNotification: "An error occurred while sending to %1 groups:\n%2"
+		},
+		tl: {
+			missingMessage: "Mangyaring ilagay ang mensaheng gusto mong ipadala sa lahat ng grupo",
+			notification: "Abiso mula sa admin bot sa lahat ng grupo (huwag sumagot sa mensaheng ito)",
+			sendingNotification: "Nagsisimula nang magpadala ng abiso mula sa admin bot sa %1 grupo",
+			sentNotification: "✅ Matagumpay na naipadala ang abiso sa %1 grupo",
+			errorSendingNotification: "Nagkaroon ng error habang nagpapadala sa %1 grupo:\n%2"
+		},
+		hi: {
+			missingMessage: "Kripya wo message dalein jo aap sabhi groups mein bhejna chahte hain",
+			notification: "Admin bot ki taraf se sabhi groups ko notification (is message ka reply mat karein)",
+			sendingNotification: "Admin bot se %1 groups mein notification bhejana shuru ho raha hai",
+			sentNotification: "✅ %1 groups mein notification successfully bhej diya gaya",
+			errorSendingNotification: "%1 groups mein bhejte waqt error aaya:\n%2"
+		},
+		ar: {
+			missingMessage: "الرجاء إدخال الرسالة التي تريد إرسالها لجميع المجموعات",
+			notification: "إشعار من مسؤول البوت لجميع المجموعات (لا ترد على هذه الرسالة)",
+			sendingNotification: "بدء إرسال الإشعار من مسؤول البوت إلى %1 مجموعة",
+			sentNotification: "✅ تم إرسال الإشعار بنجاح إلى %1 مجموعة",
+			errorSendingNotification: "حدث خطأ أثناء الإرسال إلى %1 مجموعة:\n%2"
+		},
+		bn: {
+			missingMessage: "অনুগ্রহ করে সব গ্রুপে পাঠাতে চান এমন message লিখুন",
+			notification: "Admin bot থেকে সব গ্রুপে notification (এই message এ reply করবেন না)",
+			sendingNotification: "Admin bot থেকে %1 টি গ্রুপে notification পাঠানো শুরু হচ্ছে",
+			sentNotification: "✅ %1 টি গ্রুপে সফলভাবে notification পাঠানো হয়েছে",
+			errorSendingNotification: "%1 টি গ্রুপে পাঠাতে error হয়েছে:\n%2"
 		}
 	},
 
