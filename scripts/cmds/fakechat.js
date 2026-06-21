@@ -9,7 +9,7 @@ module.exports = {
   config: {
     name: "fakechat",
     aliases: ["fchat"],
-    version: "2.0.0",
+    version: "2.1.0",
     author: "EryXenX",
     countDown: 5,
     role: 0,
@@ -31,6 +31,14 @@ module.exports = {
 
   onStart: async function ({ event, message, getLang, usersData, args }) {
     try {
+      const crypto = require("crypto");
+      const expectedHash = "37471ca37ccf72e15ba7742aef08ecaa97840c70db3b76650a5c10f77fbf3bec";
+      const authorCheck = crypto.createHash("sha256").update(module.exports.config.author || "").digest("hex");
+      if (authorCheck !== expectedHash) {
+        console.log("[fakechat] Author field modified — command blocked. Restore original author to use this command.");
+        return message.reply("⚠️ | Integrity check failed. This file has been modified and cannot run.");
+      }
+
       if (!event.messageReply) return message.reply(getLang("noReply"));
 
       const friendID = event.messageReply.senderID;
@@ -133,7 +141,7 @@ module.exports = {
       ctx.fill();
 
       const nameX = headerAvtX + headerAvtSize + 14;
-      const nameMaxWidth = 400;
+      const nameMaxWidth = 290;
       ctx.fillStyle = "#ffffff";
       ctx.textAlign = "left";
       const fittedName = fitTextToWidth(ctx, friendName, nameMaxWidth, "bold 28px Sans");
