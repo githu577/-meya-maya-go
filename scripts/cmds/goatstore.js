@@ -3,6 +3,7 @@ const path = require("path");
 const axios = require("axios");
 
 const API_BASE = "https://mirai-store.vercel.app";
+const PASTE_API_BASE = "https://pastebin-raw.vercel.app";
 const userSeenNoti = new Map();
 const AUTOSYNC_CACHE_PATH = path.join(process.cwd(), "goatstore_sync_cache.json");
 
@@ -26,17 +27,43 @@ function hashContent(content) {
 }
 
 function detectFramework(code) {
-  const isMiraiRun = /module\.exports\.run\s*=/.test(code);
-  if (isMiraiRun) return "mirai";
+  // Primary check: GoatBot config e author + role dutai thake,
+  // Mirai config e credits + hasPermission (function) dutai thake.
+  const hasAuthorRole = /\bauthor\s*:/.test(code) && /\brole\s*:/.test(code);
+  const hasCreditsPermission = /\bcredits\s*:/.test(code) && /\bhasPermission\s*[:(]/.test(code);
 
-  const hasGoatExportsBlock = /module\.exports\s*=\s*\{/.test(code);
-  const hasGoatExportsProps  = /(?:module\.)?exports\.config\s*=\s*\{/.test(code) ||
-                                /(?:module\.)?exports\.onStart\s*=/.test(code);
-  const hasGoatHooks = /onStart\s*[:(=]|onChat\s*[:(=]|onLoad\s*[:(=]/.test(code);
+  if (hasAuthorRole && !hasCreditsPermission) return "goat";
+  if (hasCreditsPermission && !hasAuthorRole) return "mirai";
 
-  const isGoat = (hasGoatExportsBlock || hasGoatExportsProps) && hasGoatHooks;
+  // Ambiguous hole (dutai match korle ba kono ta match na korle) structural check e fallback
+  const isGoatStructure =
+    /module\.exports\s*=\s*\{/.test(code) &&
+    /onStart\s*[:(]|onChat\s*[:(]|onLoad\s*[:(]/.test(code);
+  const isMiraiStructure =
+    /module\.exports\.config\s*=/.test(code) ||
+    /module\.exports\.run\s*=/.test(code);
 
-  return isGoat ? "goat" : "mirai";
+  return (isGoatStructure && !isMiraiStructure) ? "goat" : "mirai";
+}
+
+/**
+ * Uploads code to the pastebin service and returns a guaranteed non-empty
+ * rawUrl string, or throws. The MiraiStore /miraistore/upload endpoint now
+ * hard-requires rawUrl on every call (returns { error: "rawUrl required" }
+ * if it's missing), so this must always run BEFORE building the upload
+ * payload — every caller below does that, and aborts (never calls
+ * /miraistore/upload) if this throws.
+ */
+async function pasteCode(content) {
+  const res = await axios.post(`${PASTE_API_BASE}/api/paste`, { code: content });
+  if (!res.data?.id) throw new Error("Paste API theke id pawa jayni.");
+  const rawUrl = res.data.url || `${PASTE_API_BASE}/raw/${res.data.id}`;
+  if (!rawUrl || typeof rawUrl !== "string" || !rawUrl.trim()) {
+    // Defensive: guarantee callers never receive an empty/falsy rawUrl,
+    // since the server now rejects the upload outright without one.
+    throw new Error("Paste API theke valid rawUrl toiri kora gelo na.");
+  }
+  return { id: res.data.id, rawUrl };
 }
 
 async function checkSelfUpdate() {
@@ -104,14 +131,45 @@ async function runAutoSync() {
       try { new Function(content); } catch (_) { continue; }
       if (detectFramework(content) !== "goat") continue;
 
+      // rawUrl MUST be generated first — the server now rejects the upload
+      // entirely (error: "rawUrl required") if it's missing. pasteCode()
+      // throws if it can't produce a valid non-empty URL, so on failure we
+      // skip this file for this sync pass (it'll be retried next sync,
+      // since the cache is only updated on a successful upload response).
+      let rawUrl;
+      try {
+        const result = await pasteCode(content);
+        rawUrl = result.rawUrl;
+      } catch (err) {
+        console.error(`[goatstore-sync] Paste failed for ${file}:`, err.response?.data?.error || err.message);
+        await new Promise(r => setTimeout(r, 500));
+        continue;
+      }
+
       try {
         const author = content.match(/author\s*:\s*["'`](.*?)["'`]/)?.[1]
                     || content.match(/credits\s*:\s*["'`](.*?)["'`]/)?.[1]
                     || "Unknown";
         const category = content.match(/category\s*:\s*["'`](.*?)["'`]/)?.[1] || "Uncategorized";
-        const res = await axios.post(`${API_BASE}/miraistore/upload`, { rawCode: content, framework: "goat", kind, author, category });
-        if (!res.data?.error) cache[cacheKey] = hash;
-      } catch (_) {}
+        const res = await axios.post(`${API_BASE}/miraistore/upload`, { rawUrl, rawCode: content, framework: "goat", kind, author, category });
+        if (res.data?.error) {
+          // Includes the server's "rawUrl required" case if it were ever hit
+          // (shouldn't happen given the guard above, but surfaced clearly
+          // either way instead of a silent/generic failure).
+          console.error(`[goatstore-sync] Paste hoyeche (${rawUrl}) kintu store API error for ${file}:`, res.data.error);
+        } else if (res.data?.olderVersion) {
+          console.log(`[goatstore-sync] ${file}: older version — stored as separate new entry (ID: ${res.data.id}).`);
+          cache[cacheKey] = hash;
+        } else if (res.data?.updated) {
+          console.log(`[goatstore-sync] ${file}: updated existing entry (ID: ${res.data.id}) to v${res.data.version}.`);
+          cache[cacheKey] = hash;
+        } else {
+          console.log(`[goatstore-sync] ${file}: uploaded as new entry (ID: ${res.data.id}).`);
+          cache[cacheKey] = hash;
+        }
+      } catch (err) {
+        console.error(`[goatstore-sync] Paste hoyeche (${rawUrl}) kintu store API call fail for ${file}:`, err.response?.data?.error || err.message);
+      }
 
       await new Promise(r => setTimeout(r, 500));
     }
@@ -141,8 +199,9 @@ async function animateInstall(api, threadID, name) {
 async function animateUpload(api, threadID, name) {
   const steps = [
     { label: "Reading file",         pct: 25,  delay: 500 },
-    { label: "Registering to store", pct: 65,  delay: 900 },
-    { label: "Finalizing",           pct: 100, delay: 600 }
+    { label: "Uploading to paste",   pct: 55,  delay: 900 },
+    { label: "Registering to store", pct: 85,  delay: 700 },
+    { label: "Finalizing",           pct: 100, delay: 500 }
   ];
   const info = await api.sendMessage(`📤 Uploading ${name}...\n\n◖ Preparing upload...\n[░░░░░░░░░░] 0%`, threadID);
   for (let i = 0; i < steps.length; i++) {
@@ -250,10 +309,8 @@ async function sendListPage(api, threadID, senderID, type, page, limit = 10) {
     data.commands.forEach(cmd => {
       msg += `╭─‣ ${cmd.name} 〄\n`;
       msg += `├‣ ID : ${cmd.id}\n`;
-      msg += `├‣ Version : ${cmd.version || "N/A"}\n`;
       msg += `├‣ Author : ${cmd.author}\n`;
       msg += `├‣ Category : ${cmd.category}\n`;
-      msg += `├‣ Views : 👁️ ${cmd.views || 0}\n`;
       msg += `╰────────────◊\n`;
       msg += ` ✰ Upload : ${new Date(cmd.uploadDate || Date.now()).toDateString()}\n\n`;
     });
@@ -284,11 +341,9 @@ async function sendSearchPage(api, threadID, senderID, query, page, limit = 5) {
     all.forEach(cmd => {
       msg += `╭─‣ ${cmd.name} 〄\n`;
       msg += `├‣ ID : ${cmd.id}\n`;
-      msg += `├‣ Version : ${cmd.version || "N/A"}\n`;
       msg += `├‣ Type : ${cmd.type === "goat-event" ? "🎯 Event" : "⚡ Command"}\n`;
       msg += `├‣ Author : ${cmd.author}\n`;
       msg += `├‣ Category : ${cmd.category}\n`;
-      msg += `├‣ Views : 👁️ ${cmd.views || 0}\n`;
       msg += `╰────────────◊\n`;
       msg += ` ✰ Upload : ${new Date(cmd.uploadDate || Date.now()).toDateString()}\n\n`;
     });
@@ -318,28 +373,114 @@ async function uploadFile(api, threadID, filePath, kind) {
   let pid;
   try { pid = await animateUpload(api, threadID, displayName); } catch (_) {}
 
+  // rawUrl MUST be generated and confirmed valid BEFORE calling
+  // /miraistore/upload — the server now hard-requires it and returns
+  // { error: "rawUrl required" } otherwise. pasteCode() throws on any
+  // failure (paste API error OR empty/invalid URL), so this whole block
+  // aborts cleanly (with a clear message) before ever reaching the store call.
+  let rawUrl;
   try {
-    const res = await axios.post(`${API_BASE}/miraistore/upload`, { rawCode: data, framework: "goat", kind });
-    if (res.data?.error) { if (pid) api.unsendMessage(pid); return api.sendMessage(`⚠️ ${res.data.error}`, threadID); }
+    const result = await pasteCode(data);
+    rawUrl = result.rawUrl;
+  } catch (err) {
+    if (pid) api.unsendMessage(pid);
+    return api.sendMessage(
+      `❌ Paste Upload Failed!\n` +
+      `╭─‣ Step : Code -> Pastebin\n` +
+      `├‣ Error : ${err.response?.data?.error || err.message}\n` +
+      `╰────────────◊\n` +
+      `💡 Eta bot side er problem — pastebin e code ta e upload hoyni, tai rawUrl toiri hoyni.`,
+      threadID
+    );
+  }
+
+  try {
+    const res = await axios.post(`${API_BASE}/miraistore/upload`, { rawUrl, rawCode: data, framework: "goat", kind });
+
+    // "Already exists" (same name+author+type+version) and protected-name
+    // blocks come back as res.data.error — but they aren't really paste/API
+    // failures, so give them their own clear message instead of the generic
+    // "Store API Error" wording below.
+    if (res.data?.error === "Already exists" || res.data?.error === "Not allowed") {
+      if (pid) api.unsendMessage(pid);
+      return api.sendMessage(
+        `⚠️ ${res.data.error === "Not allowed" ? "Upload Blocked!" : "Already Exists in Store!"}\n` +
+        `╭─‣ Name : ${displayName}\n` +
+        (res.data.id ? `├‣ ID : ${res.data.id}\n` : "") +
+        `╰────────────◊\n` +
+        `💡 ${res.data.message}`,
+        threadID
+      );
+    }
+
+    // Server hard-requires rawUrl now — give this its own clear message too
+    // instead of falling through to the generic "Store API Error" wording,
+    // since this specific case means the payload itself was incomplete.
+    if (res.data?.error === "rawUrl required") {
+      if (pid) api.unsendMessage(pid);
+      return api.sendMessage(
+        `⚠️ rawUrl Missing!\n` +
+        `╭─‣ Name : ${displayName}\n` +
+        `╰────────────◊\n` +
+        `💡 Store API ke rawUrl pathano hoyni. Eta bot side er bug — report koro.`,
+        threadID
+      );
+    }
+
+    if (res.data?.error) {
+      if (pid) api.unsendMessage(pid);
+      return api.sendMessage(
+        `⚠️ Paste Hoyeche, Kintu Store API Error!\n` +
+        `╭─‣ Paste Link : ${rawUrl}\n` +
+        `├‣ Error : ${res.data.error}\n` +
+        `╰────────────◊\n` +
+        `💡 Code ta pastebin e successfully upload hoyeche (link kaj korbe), kintu MiraiStore backend register korte parenai. Backend/API side check koro.`,
+        threadID
+      );
+    }
+
     const author  = data.match(/author\s*:\s*["'`](.*?)["'`]/)?.[1]
                  || data.match(/credits\s*:\s*["'`](.*?)["'`]/)?.[1]
                  || "Unknown";
     const version = data.match(/version\s*:\s*["'`](.*?)["'`]/)?.[1] || "N/A";
     const category = data.match(/category\s*:\s*["'`](.*?)["'`]/)?.[1] || "Uncategorized";
+
+    // Distinguish: brand new entry vs overwritten (newer version) entry vs
+    // stored-separately (older version) entry — each gets its own header
+    // and surfaces the server's message so the user knows exactly what happened.
+    let header = "✅ Upload Successful!";
+    let note = "";
+    if (res.data.olderVersion) {
+      header = "⚠️ Older Version — Stored As New Entry!";
+      note = `💡 ${res.data.message}\n`;
+    } else if (res.data.updated) {
+      header = "🔄 Updated Existing Entry (Overwritten)!";
+      note = `💡 ${res.data.message}\n`;
+    }
+
     const msg =
-      `✅ Upload Successful!\n` +
+      `${header}\n` +
       `╭─‣ Name : ${displayName}\n` +
       `├‣ Type : ${res.data.type || `goat-${kind}`}\n` +
       `├‣ Version : ${version}\n` +
       `├‣ Author : ${author}\n` +
       `├‣ Category : ${category}\n` +
+      `├‣ ID : ${res.data.id}\n` +
       `╰────────────◊\n` +
+      note +
       `⭔ Upload : ${new Date().toDateString()}`;
     if (pid) { try { await api.editMessage(msg, pid); } catch (_) { api.sendMessage(msg, threadID); } }
     else api.sendMessage(msg, threadID);
-  } catch (_) {
+  } catch (err) {
     if (pid) api.unsendMessage(pid);
-    api.sendMessage("❌ Upload failed. Try again later.", threadID);
+    api.sendMessage(
+      `⚠️ Paste Hoyeche, Kintu Store API Call Fail Korlo!\n` +
+      `╭─‣ Paste Link : ${rawUrl}\n` +
+      `├‣ Error : ${err.response?.data?.error || err.message}\n` +
+      `╰────────────◊\n` +
+      `💡 Code ta pastebin e ache (link kaj korbe), kintu MiraiStore backend e request e i pouchayni thik moto. Backend/network check koro.`,
+      threadID
+    );
   }
 }
 
@@ -347,7 +488,7 @@ module.exports = {
   config: {
     name: "goatstore",
     aliases: ["gs", "cmdstore", "commandstore"],
-    version: "7.0.0",
+    version: "7.2.0",
     author: "rX & EryXenX",
     countDown: 3,
     role: 2,
@@ -620,8 +761,8 @@ module.exports = {
           `├‣ ID : ${data.id}\n` +
           `╰────────────◊\n` +
           `⭔ Description: ${data.description || "No description"}\n` +
-          `⭔ Upload : ${new Date(data.uploadDate || Date.now()).toDateString()}` +
-          (data.rawUrl ? `\n🌐 URL : ${data.rawUrl}` : ""),
+          `⭔ Upload : ${new Date(data.uploadDate || Date.now()).toDateString()}\n` +
+          `🌐 URL : ${data.rawUrl}`,
           threadID
         );
       }
