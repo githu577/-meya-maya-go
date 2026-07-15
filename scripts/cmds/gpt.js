@@ -1,50 +1,75 @@
-const axios = require("axios");
+const axios = require('axios');
+const fs = require('fs-extra'); 
+const path = require('path');
+
+const API_ENDPOINT = "https://neokex-img-api.vercel.app/generate"; 
 
 module.exports = {
-	config: {
-		name: "youai",
-		aliases: ["you", "youchat", "ai", "gpt", "gemini"],
-		version: "1.0",
-		author: "nexo_here",
-		countDown: 5,
-		role: 0,
-		shortDescription: "Chat with You AI",
-		longDescription: "Send a message and get a friendly AI response with related questions",
-		category: "ai",
-		guide: {
-			en: "{pn} <your message>"
-		}
-	},
+  config: {
+    name: "gpt",
+    aliases: ["gpt1.5", "gptimg"],
+    version: "1.0", 
+    author: "NeoKEX",
+    countDown: 15,
+    role: 0,
+    longDescription: "Generate an image using the GPT 1.5 model.",
+    category: "ai-image",
+    guide: {
+      en: "{pn} <prompt>"
+    }
+  },
 
-	langs: {
-		en: {
-			noInput: "⚠️ Please type something to ask.",
-			loading: "🧠 Thinking...",
-			error: "❌ Failed to get response from You AI."
-		}
-	},
+  onStart: async function({ message, args, event }) {
+    
+    let prompt = args.join(" ");
 
-	onStart: async function ({ message, args, getLang }) {
-		const input = args.join(" ");
-		if (!input) return message.reply(getLang("noInput"));
+    if (!prompt) {
+        return message.reply("❌ Please provide a prompt.");
+    }
 
-		message.reply(getLang("loading"));
+    message.reaction("🚬", event.messageID);
+    let tempFilePath; 
 
-		try {
-			const apiUrl = `https://betadash-api-swordslush-production.up.railway.app/you?chat=${encodeURIComponent(input)}`;
-			const res = await axios.get(apiUrl);
+    try {
+      const fullApiUrl = `${API_ENDPOINT}?prompt=${encodeURIComponent(prompt.trim())}&model=gpt1.5`;
+      
+      const response = await axios.get(fullApiUrl, {
+          responseType: 'stream',
+          timeout: 60000 
+      });
 
-			const data = res.data;
-			if (!data || !data.response) return message.reply(getLang("error"));
+      if (response.status !== 200) {
+           throw new Error(`API error: ${response.status}`);
+      }
+      
+      const cacheDir = path.join(__dirname, 'cache');
+      if (!fs.existsSync(cacheDir)) {
+          await fs.ensureDir(cacheDir); 
+      }
+      
+      tempFilePath = path.join(cacheDir, `gpt_${Date.now()}.png`);
+      
+      const writer = fs.createWriteStream(tempFilePath);
+      response.data.pipe(writer);
 
-			const related = data.relatedSearch?.length
-				? "\n\n💡 Related:\n" + data.relatedSearch.map((r, i) => `• ${r}`).join("\n")
-				: "";
+      await new Promise((resolve, reject) => {
+        writer.on("finish", resolve);
+        writer.on("error", reject);
+      });
 
-			return message.reply(`🧠 ${data.response}${related}`);
-		} catch (err) {
-			console.error("YouAI Error:", err.message || err);
-			return message.reply(getLang("error"));
-		}
-	}
+      message.reaction("✅", event.messageID);
+      await message.reply({
+        body: `gpt 1.5 image generated 🐦`,
+        attachment: fs.createReadStream(tempFilePath)
+      });
+
+    } catch (error) {
+      message.reaction("❌", event.messageID);
+      message.reply(`❌ Error: ${error.message}`);
+    } finally {
+      if (tempFilePath && fs.existsSync(tempFilePath)) {
+          await fs.unlink(tempFilePath);
+      }
+    }
+  }
 };
